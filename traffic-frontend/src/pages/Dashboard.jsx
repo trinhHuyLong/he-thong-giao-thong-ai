@@ -1,5 +1,7 @@
 import React from "react";
 
+import TrafficControl from "../components/TrafficControl";
+
 function Dashboard() {
   // Thay thế IP này bằng IP thực tế của ESP32 của bạn
   const ESP32_URL = "http://172.20.10.2";
@@ -10,13 +12,7 @@ function Dashboard() {
       <p>Bảng điều khiển trực tiếp từ thiết bị phần cứng (ESP32).</p>
 
       <div className="iframe-container">
-        <iframe
-          src={ESP32_URL}
-          width="100%"
-          height="100%"
-          frameBorder="0"
-          title="ESP32 Traffic Controller"
-        ></iframe>
+        <TrafficControl />
       </div>
     </div>
   );
