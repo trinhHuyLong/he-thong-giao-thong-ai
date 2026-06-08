@@ -1,5 +1,7 @@
 require("dotenv").config();
 const express = require("express");
+const http = require("http"); // Thêm thư viện HTTP lõi của Node.js
+const WebSocket = require("ws"); // Thêm thư viện WebSocket
 const mongoose = require("mongoose");
 const cors = require("cors");
 const cloudinary = require("cloudinary").v2;
@@ -13,14 +15,23 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// LƯU Ý: Phải đặt dưới các route API như /api/violations để tránh Express nhận diện nhầm
+// --- TẠO SERVER CỦA ĐỒNG BỘ WEBSOCKET ---
+const server = http.createServer(app); // Bọc Express vào HTTP Server
+const wss = new WebSocket.Server({ server }); // Khởi tạo WebSocket Server
 
-// 1. Chỉ định thư mục chứa file tĩnh sau khi React build
-app.use(express.static(path.join(__dirname, "../traffic-frontend/dist")));
+// Danh sách quản lý các mạch ESP32 đang kết nối
+let espClients = new Set();
 
-// 2. Cấu hình "Catch-all" route: Mọi request không trùng với API sẽ được đẩy về index.html của React
-app.get(/(.*)/, (req, res) => {
-  res.sendFile(path.join(__dirname, "../traffic-frontend/dist", "index.html"));
+wss.on("connection", (ws) => {
+  espClients.add(ws);
+  console.log(
+    "🔌 [WebSocket] Một mạch ESP32 đã kết nối vào hệ thống Internet!",
+  );
+
+  ws.on("close", () => {
+    espClients.delete(ws);
+    console.log("❌ [WebSocket] Mạch ESP32 đã mất kết nối.");
+  });
 });
 
 // --- 1. KẾT NỐI MONGODB ---
@@ -39,14 +50,33 @@ cloudinary.config({
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
-    folder: "traffic_violations", // Ảnh sẽ lưu vào folder này trên Cloudinary
+    folder: "traffic_violations",
     allowed_formats: ["jpg", "jpeg", "png"],
   },
 });
 
 const upload = multer({ storage: storage });
 
-// --- 3. TẠO API NHẬN DỮ LIỆU TỪ PYTHON ---
+// ========================================================
+// HỆ THỐNG CÁC API ROUTES (ĐỂ TRÊN)
+// ========================================================
+
+// --- API ĐIỀU KHIỂN ĐÈN CHO IFRAME / REACTJS ---
+app.get("/api/control", (req, res) => {
+  const dir = req.query.dir;
+  console.log(`📥 Nhận lệnh đổi đèn từ Web hướng: ${dir} -> Bắn xuống ESP32`);
+
+  // Gửi lệnh qua ống dẫn WebSocket xuống thẳng ESP32
+  espClients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(`CHG:${dir}`);
+    }
+  });
+
+  res.send("OK");
+});
+
+// --- API NHẬN DỮ LIỆU PHẠT NGUỘI TỪ PYTHON RASPBERRY PI ---
 app.post(
   "/api/violations",
   upload.fields([
@@ -55,7 +85,6 @@ app.post(
   ]),
   async (req, res) => {
     try {
-      // Chỉ lấy plateText, bỏ direction
       const { plateText } = req.body;
 
       const fullImageUrl = req.files["full_image"]
@@ -65,7 +94,6 @@ app.post(
         ? req.files["crop_image"][0].path
         : "";
 
-      // Tạo bản ghi mới không có direction
       const newViolation = new Violation({
         plateText: plateText,
         fullImageUrl: fullImageUrl,
@@ -74,7 +102,7 @@ app.post(
 
       await newViolation.save();
 
-      console.log(`🚨 Nhận vi phạm mới: Xe ${plateText}`); // Cập nhật lại log
+      console.log(`🚨 Nhận vi phạm mới từ Pi: Xe ${plateText}`);
       res
         .status(201)
         .json({ message: "Lưu vi phạm thành công!", data: newViolation });
@@ -88,7 +116,6 @@ app.post(
 // --- API LẤY DANH SÁCH CHO REACTJS ---
 app.get("/api/violations", async (req, res) => {
   try {
-    // Lấy danh sách vi phạm, sắp xếp mới nhất lên đầu
     const violations = await Violation.find().sort({ violationTime: -1 });
     res.status(200).json(violations);
   } catch (error) {
@@ -99,7 +126,6 @@ app.get("/api/violations", async (req, res) => {
 // --- API TÌM KIẾM THEO BIỂN SỐ XE ---
 app.get("/api/violations/search", async (req, res) => {
   try {
-    // Lấy từ khóa tìm kiếm từ query URL (ví dụ: ?plate=29A)
     const searchQuery = req.query.plate;
 
     if (!searchQuery) {
@@ -108,10 +134,9 @@ app.get("/api/violations/search", async (req, res) => {
         .json({ error: "Vui lòng cung cấp biển số xe cần tìm (plate)" });
     }
 
-    // Tìm kiếm tương đối (Regex) và không phân biệt chữ hoa/thường ($options: 'i')
     const violations = await Violation.find({
       plateText: { $regex: searchQuery, $options: "i" },
-    }).sort({ violationTime: -1 }); // Vẫn sắp xếp mới nhất lên đầu
+    }).sort({ violationTime: -1 });
 
     res.status(200).json(violations);
   } catch (error) {
@@ -120,8 +145,21 @@ app.get("/api/violations/search", async (req, res) => {
   }
 });
 
-// --- 4. CHẠY SERVER ---
+// ========================================================
+// CẤU HÌNH PHỤC VỤ FILE TĨNH FRONTEND (PHẢI ĐỂ DƯỚI CÙNG)
+// ========================================================
+
+// 1. Chỉ định thư mục chứa file tĩnh sau khi React build
+app.use(express.static(path.join(__dirname, "../traffic-frontend/dist")));
+
+// 2. Cấu hình "Catch-all" route xử lý chuyển trang cho React Router bằng Regex định dạng mới
+app.get(/(.*)/, (req, res) => {
+  res.sendFile(path.join(__dirname, "../traffic-frontend/dist", "index.html"));
+});
+
+// --- CHẠY SERVER ---
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server Node.js đang chạy tại cổng ${PORT}`);
+// Thay app.listen bằng server.listen để kích hoạt cả HTTP + WebSocket
+server.listen(PORT, () => {
+  console.log(`🚀 Hệ thống All-in-One đang chạy tại cổng ${PORT}`);
 });
