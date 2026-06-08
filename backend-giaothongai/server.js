@@ -19,7 +19,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "../traffic-frontend/dist")));
 
 // 2. Cấu hình "Catch-all" route: Mọi request không trùng với API sẽ được đẩy về index.html của React
-app.get("*", (req, res) => {
+app.get(/(.*)/, (req, res) => {
   res.sendFile(path.join(__dirname, "../traffic-frontend/dist", "index.html"));
 });
 
