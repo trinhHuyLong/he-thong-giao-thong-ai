@@ -15,11 +15,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- TẠO SERVER ĐỒNG BỘ HTTP & WEBSOCKET ---
+// --- TẠO SERVER HỖ TRỢ HTTP VÀ WEBSOCKET ---
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Danh sách quản lý tất cả kết nối (Cả ESP32 và các tab trình duyệt React)
+// KHAI BÁO BIẾN TOÀN CỤC QUẢN LÝ CLIENTS
 let allClients = new Set();
 
 wss.on("connection", (ws) => {
@@ -28,9 +28,8 @@ wss.on("connection", (ws) => {
 
   ws.on("message", (message) => {
     const msgStr = message.toString();
-
-    // Nếu ESP32 gửi dữ liệu trạng thái lên -> Phát tán cho các tab React đang mở
     if (msgStr.startsWith("DATA:")) {
+      // Phát dữ liệu từ ESP32 cho tất cả các tab trình duyệt
       allClients.forEach((client) => {
         if (client !== ws && client.readyState === WebSocket.OPEN) {
           client.send(msgStr);
@@ -51,7 +50,7 @@ mongoose
   .then(() => console.log("✅ Đã kết nối MongoDB Atlas!"))
   .catch((err) => console.error("❌ Lỗi kết nối MongoDB:", err));
 
-// --- 2. CẤU HÌNH CLOUDINARY & MULTER ---
+// --- 2. CẤU HÌNH CLOUDINARY ---
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -65,19 +64,15 @@ const storage = new CloudinaryStorage({
     allowed_formats: ["jpg", "jpeg", "png"],
   },
 });
-
 const upload = multer({ storage: storage });
 
 // ========================================================
-// HỆ THỐNG API ROUTES
+// API ROUTES
 // ========================================================
 
-// --- API ĐIỀU KHIỂN ĐÈN TỪ WEB -> ESP32 ---
+// 1. Điều khiển đèn
 app.get("/api/control", (req, res) => {
   const dir = req.query.dir;
-  console.log(`📥 Nhận lệnh điều khiển hướng: ${dir}`);
-
-  // Gửi lệnh CHG: đến tất cả client (ESP32 sẽ nhận và xử lý lệnh này)
   allClients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(`CHG:${dir}`);
@@ -86,40 +81,31 @@ app.get("/api/control", (req, res) => {
   res.send("OK");
 });
 
-// --- API LƯU VI PHẠM TỪ RASPBERRY PI ---
+// 2. Lưu vi phạm từ Pi
 app.post(
   "/api/violations",
-  upload.fields([
-    { name: "full_image", maxCount: 1 },
-    { name: "crop_image", maxCount: 1 },
-  ]),
+  upload.fields([{ name: "full_image" }, { name: "crop_image" }]),
   async (req, res) => {
     try {
       const { plateText } = req.body;
-      const fullImageUrl = req.files["full_image"]
-        ? req.files["full_image"][0].path
-        : "";
-      const cropImageUrl = req.files["crop_image"]
-        ? req.files["crop_image"][0].path
-        : "";
-
       const newViolation = new Violation({
         plateText,
-        fullImageUrl,
-        cropImageUrl,
+        fullImageUrl: req.files["full_image"]
+          ? req.files["full_image"][0].path
+          : "",
+        cropImageUrl: req.files["crop_image"]
+          ? req.files["crop_image"][0].path
+          : "",
       });
-
       await newViolation.save();
-      console.log(`🚨 Nhận vi phạm mới: Xe ${plateText}`);
-      res.status(201).json({ message: "Lưu thành công!", data: newViolation });
+      res.status(201).json({ message: "Lưu thành công!" });
     } catch (error) {
-      console.error("Lỗi:", error);
       res.status(500).json({ error: "Lỗi server" });
     }
   },
 );
 
-// --- API LẤY DANH SÁCH VI PHẠM ---
+// 3. Lấy danh sách vi phạm
 app.get("/api/violations", async (req, res) => {
   try {
     const violations = await Violation.find().sort({ violationTime: -1 });
@@ -129,13 +115,12 @@ app.get("/api/violations", async (req, res) => {
   }
 });
 
-// --- API TÌM KIẾM ---
+// 4. Tìm kiếm vi phạm theo biển số
 app.get("/api/violations/search", async (req, res) => {
   try {
     const { plate } = req.query;
-    const violations = await Violation.find({
-      plateText: { $regex: plate || "", $options: "i" },
-    }).sort({ violationTime: -1 });
+    const query = plate ? { plateText: { $regex: plate, $options: "i" } } : {};
+    const violations = await Violation.find(query).sort({ violationTime: -1 });
     res.status(200).json(violations);
   } catch (error) {
     res.status(500).json({ error: "Lỗi server" });
@@ -143,16 +128,15 @@ app.get("/api/violations/search", async (req, res) => {
 });
 
 // ========================================================
-// PHỤC VỤ FRONTEND (REACT)
+// PHỤC VỤ FRONTEND
 // ========================================================
 app.use(express.static(path.join(__dirname, "../traffic-frontend/dist")));
-
-app.get(/(.*)/, (req, res) => {
+app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../traffic-frontend/dist", "index.html"));
 });
 
-// --- CHẠY SERVER ---
+// --- KHỞI CHẠY SERVER ---
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`🚀 Hệ thống đang chạy tại cổng ${PORT}`);
+  console.log(`🚀 Server đang chạy tại cổng ${PORT}`);
 });
