@@ -131,7 +131,10 @@ app.get("/api/violations/search", async (req, res) => {
 // PHỤC VỤ FRONTEND
 // ========================================================
 app.use(express.static(path.join(__dirname, "../traffic-frontend/dist")));
-app.get("*", (req, res) => {
+app.get("*", (req, res, next) => {
+  if (req.path.startsWith("/api")) {
+    return next(); // Nếu là API thì bỏ qua, đừng chuyển hướng
+  }
   res.sendFile(path.join(__dirname, "../traffic-frontend/dist", "index.html"));
 });
 
