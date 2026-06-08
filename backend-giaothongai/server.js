@@ -130,12 +130,20 @@ app.get("/api/violations/search", async (req, res) => {
 // ========================================================
 // PHỤC VỤ FRONTEND
 // ========================================================
-app.use(express.static(path.join(__dirname, "../traffic-frontend/dist")));
-app.get("*", (req, res, next) => {
-  if (req.path.startsWith("/api")) {
-    return next(); // Nếu là API thì bỏ qua, đừng chuyển hướng
+const frontendPath = path.join(__dirname, "../traffic-frontend/dist");
+
+// 1. Phục vụ các file tĩnh (js, css, images...)
+app.use(express.static(frontendPath));
+
+// 2. Middleware để phục vụ index.html cho các route của React Router
+// Cách này bỏ qua việc sử dụng router.route, tránh lỗi PathError
+app.use((req, res, next) => {
+  // Nếu request không phải là API, trả về index.html
+  if (!req.path.startsWith("/api")) {
+    res.sendFile(path.join(frontendPath, "index.html"));
+  } else {
+    next(); // Nếu là API thì tiếp tục chạy xuống dưới (hoặc qua các route API)
   }
-  res.sendFile(path.join(__dirname, "../traffic-frontend/dist", "index.html"));
 });
 
 // --- KHỞI CHẠY SERVER ---
