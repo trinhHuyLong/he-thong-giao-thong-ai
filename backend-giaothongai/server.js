@@ -1,7 +1,7 @@
 require("dotenv").config();
 const express = require("express");
-const http = require("http"); // Thêm thư viện HTTP lõi của Node.js
-const WebSocket = require("ws"); // Thêm thư viện WebSocket
+const http = require("http");
+const WebSocket = require("ws");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const cloudinary = require("cloudinary").v2;
@@ -15,25 +15,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- TẠO SERVER CỦA ĐỒNG BỘ WEBSOCKET ---
-const server = http.createServer(app); // Bọc Express vào HTTP Server
-const wss = new WebSocket.Server({ server }); // Khởi tạo WebSocket Server
+// --- TẠO SERVER ĐỒNG BỘ HTTP & WEBSOCKET ---
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
-// Danh sách quản lý các mạch ESP32 đang kết nối
-let espClients = new Set();
+// Danh sách quản lý tất cả kết nối (Cả ESP32 và các tab trình duyệt React)
+let allClients = new Set();
 
 wss.on("connection", (ws) => {
-  espClients.add(ws);
-  console.log(
-    "🔌 [WebSocket] Một mạch ESP32 đã kết nối vào hệ thống Internet!",
-  );
+  allClients.add(ws);
+  console.log("🔌 [WebSocket] Một thiết bị đã kết nối!");
 
   ws.on("message", (message) => {
     const msgStr = message.toString();
 
-    // Nếu tin nhắn bắt đầu bằng "DATA:" (tức là từ ESP32 gửi giây lên)
+    // Nếu ESP32 gửi dữ liệu trạng thái lên -> Phát tán cho các tab React đang mở
     if (msgStr.startsWith("DATA:")) {
-      // Phát tán ngược đống giây này cho tất cả các tab ReactJS đang mở
       allClients.forEach((client) => {
         if (client !== ws && client.readyState === WebSocket.OPEN) {
           client.send(msgStr);
@@ -43,8 +40,8 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
-    espClients.delete(ws);
-    console.log("❌ [WebSocket] Mạch ESP32 đã mất kết nối.");
+    allClients.delete(ws);
+    console.log("❌ [WebSocket] Một thiết bị đã ngắt kết nối.");
   });
 });
 
@@ -72,25 +69,24 @@ const storage = new CloudinaryStorage({
 const upload = multer({ storage: storage });
 
 // ========================================================
-// HỆ THỐNG CÁC API ROUTES (ĐỂ TRÊN)
+// HỆ THỐNG API ROUTES
 // ========================================================
 
-// --- API ĐIỀU KHIỂN ĐÈN CHO IFRAME / REACTJS ---
+// --- API ĐIỀU KHIỂN ĐÈN TỪ WEB -> ESP32 ---
 app.get("/api/control", (req, res) => {
   const dir = req.query.dir;
-  console.log(`📥 Nhận lệnh đổi đèn từ Web hướng: ${dir} -> Bắn xuống ESP32`);
+  console.log(`📥 Nhận lệnh điều khiển hướng: ${dir}`);
 
-  // Gửi lệnh qua ống dẫn WebSocket xuống thẳng ESP32
-  espClients.forEach((client) => {
+  // Gửi lệnh CHG: đến tất cả client (ESP32 sẽ nhận và xử lý lệnh này)
+  allClients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(`CHG:${dir}`);
     }
   });
-
   res.send("OK");
 });
 
-// --- API NHẬN DỮ LIỆU PHẠT NGUỘI TỪ PYTHON RASPBERRY PI ---
+// --- API LƯU VI PHẠM TỪ RASPBERRY PI ---
 app.post(
   "/api/violations",
   upload.fields([
@@ -100,7 +96,6 @@ app.post(
   async (req, res) => {
     try {
       const { plateText } = req.body;
-
       const fullImageUrl = req.files["full_image"]
         ? req.files["full_image"][0].path
         : "";
@@ -109,71 +104,55 @@ app.post(
         : "";
 
       const newViolation = new Violation({
-        plateText: plateText,
-        fullImageUrl: fullImageUrl,
-        cropImageUrl: cropImageUrl,
+        plateText,
+        fullImageUrl,
+        cropImageUrl,
       });
 
       await newViolation.save();
-
-      console.log(`🚨 Nhận vi phạm mới từ Pi: Xe ${plateText}`);
-      res
-        .status(201)
-        .json({ message: "Lưu vi phạm thành công!", data: newViolation });
+      console.log(`🚨 Nhận vi phạm mới: Xe ${plateText}`);
+      res.status(201).json({ message: "Lưu thành công!", data: newViolation });
     } catch (error) {
-      console.error("Lỗi khi lưu vi phạm:", error);
-      res.status(500).json({ error: "Lỗi server nội bộ" });
+      console.error("Lỗi:", error);
+      res.status(500).json({ error: "Lỗi server" });
     }
   },
 );
 
-// --- API LẤY DANH SÁCH CHO REACTJS ---
+// --- API LẤY DANH SÁCH VI PHẠM ---
 app.get("/api/violations", async (req, res) => {
   try {
     const violations = await Violation.find().sort({ violationTime: -1 });
     res.status(200).json(violations);
   } catch (error) {
-    res.status(500).json({ error: "Lỗi server nội bộ" });
+    res.status(500).json({ error: "Lỗi server" });
   }
 });
 
-// --- API TÌM KIẾM THEO BIỂN SỐ XE ---
+// --- API TÌM KIẾM ---
 app.get("/api/violations/search", async (req, res) => {
   try {
-    const searchQuery = req.query.plate;
-
-    if (!searchQuery) {
-      return res
-        .status(400)
-        .json({ error: "Vui lòng cung cấp biển số xe cần tìm (plate)" });
-    }
-
+    const { plate } = req.query;
     const violations = await Violation.find({
-      plateText: { $regex: searchQuery, $options: "i" },
+      plateText: { $regex: plate || "", $options: "i" },
     }).sort({ violationTime: -1 });
-
     res.status(200).json(violations);
   } catch (error) {
-    console.error("Lỗi khi tìm kiếm:", error);
-    res.status(500).json({ error: "Lỗi server nội bộ" });
+    res.status(500).json({ error: "Lỗi server" });
   }
 });
 
 // ========================================================
-// CẤU HÌNH PHỤC VỤ FILE TĨNH FRONTEND (PHẢI ĐỂ DƯỚI CÙNG)
+// PHỤC VỤ FRONTEND (REACT)
 // ========================================================
-
-// 1. Chỉ định thư mục chứa file tĩnh sau khi React build
 app.use(express.static(path.join(__dirname, "../traffic-frontend/dist")));
 
-// 2. Cấu hình "Catch-all" route xử lý chuyển trang cho React Router bằng Regex định dạng mới
 app.get(/(.*)/, (req, res) => {
   res.sendFile(path.join(__dirname, "../traffic-frontend/dist", "index.html"));
 });
 
 // --- CHẠY SERVER ---
 const PORT = process.env.PORT || 5000;
-// Thay app.listen bằng server.listen để kích hoạt cả HTTP + WebSocket
 server.listen(PORT, () => {
-  console.log(`🚀 Hệ thống All-in-One đang chạy tại cổng ${PORT}`);
+  console.log(`🚀 Hệ thống đang chạy tại cổng ${PORT}`);
 });
