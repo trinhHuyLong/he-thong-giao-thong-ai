@@ -28,6 +28,20 @@ wss.on("connection", (ws) => {
     "🔌 [WebSocket] Một mạch ESP32 đã kết nối vào hệ thống Internet!",
   );
 
+  ws.on("message", (message) => {
+    const msgStr = message.toString();
+
+    // Nếu tin nhắn bắt đầu bằng "DATA:" (tức là từ ESP32 gửi giây lên)
+    if (msgStr.startsWith("DATA:")) {
+      // Phát tán ngược đống giây này cho tất cả các tab ReactJS đang mở
+      allClients.forEach((client) => {
+        if (client !== ws && client.readyState === WebSocket.OPEN) {
+          client.send(msgStr);
+        }
+      });
+    }
+  });
+
   ws.on("close", () => {
     espClients.delete(ws);
     console.log("❌ [WebSocket] Mạch ESP32 đã mất kết nối.");
